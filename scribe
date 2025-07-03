@@ -1,0 +1,107 @@
+#!/bin/bash
+#
+# Name: llm-context
+# Desc: A tool to bundle all git-tracked files into a single text block for LLMs.
+# It automatically respects .gitignore rules and can pipe to clipboard.
+# Version: 1.0.0
+# Author: [Your Name/Handle]
+
+set -euo pipefail # Fail on error, unset var, or pipe fail
+
+# --- HELP & USAGE ---
+show_help() {
+  cat << EOF
+Usage: llm-context [options]
+
+Bundles all git-tracked, text-based files into a single output for LLM context.
+It automatically respects .gitignore rules at all levels.
+
+Options:
+  -c, --copy      Copy the output directly to the system clipboard.
+  -h, --help      Show this help message.
+  --version       Show tool version.
+
+Examples:
+  llm-context                  # Print context to standard output
+  llm-context > context.txt    # Save context to a file
+  llm-context --copy           # Copy context directly to the clipboard
+EOF
+}
+
+# --- SCRIPT LOGIC ---
+main() {
+  local copy_to_clipboard=false
+
+  # Parse arguments
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      -c|--copy) copy_to_clipboard=true; shift ;;
+      -h|--help) show_help; exit 0 ;;
+      --version) echo "llm-context version 1.0.0"; exit 0 ;;
+      *) echo "Error: Unknown option: $1" >&2; show_help; exit 1 ;;
+    esac
+  done
+
+  # Check for dependencies: git and file command
+  if ! command -v git &> /dev/null; then
+    echo "Error: git is not installed. Please install it to use this tool." >&2
+    exit 1
+  fi
+  if ! command -v file &> /dev/null; then
+    echo "Error: The 'file' command is not found. It is required to identify text files." >&2
+    exit 1
+  fi
+
+  # Check if we are inside a git repository
+  if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    echo "Error: Not a git repository." >&2
+    echo "Please run this command from within a git repository." >&2
+    exit 1
+  fi
+
+  # Generate the context
+  # 'git ls-files -z' lists all tracked files, NULL-separated
+  # 'xargs -0' reads the NULL-separated list to handle special filenames
+  local context_output
+  context_output=$(git ls-files -z | xargs -0 -I{} sh -c '
+    file="{}"
+    # Use a more comprehensive check for text files
+    if file --mime-type "$file" | grep -Eq "text/|json|xml|javascript|x-sh|x-ruby"; then
+      echo "--- FILE: ./$file ---"
+      cat "$file"
+      echo # Add a newline for spacing after the file content
+      echo # Add another for a blank line between entries
+    fi
+  ')
+
+  if [[ -z "$context_output" ]]; then
+    echo "Warning: No text files were found in the git repository." >&2
+    exit 0
+  fi
+
+  # Handle output: either print to stdout or copy to clipboard
+  if [[ "$copy_to_clipboard" = true ]]; then
+    copy_command=""
+    # Determine OS and set the appropriate copy command
+    if [[ "$(uname)" == "Darwin" ]]; then # macOS
+      copy_command="pbcopy"
+    elif command -v xclip &> /dev/null; then # Linux with xclip
+      copy_command="xclip -selection clipboard"
+    elif command -v wl-copy &> /dev/null; then # Linux with Wayland
+      copy_command="wl-copy"
+    else
+      echo "Error: Could not find a clipboard command." >&2
+      echo "Please install 'xclip' (for X11) or 'wl-copy' (for Wayland) on Linux." >&2
+      echo "On macOS, pbcopy should be available by default." >&2
+      exit 1
+    fi
+    
+    echo -n "$context_output" | $copy_command
+    echo "Context copied to clipboard." >&2 # Info message to stderr
+  else
+    echo -n "$context_output"
+  fi
+}
+
+# Run the main function
+main "$@"
